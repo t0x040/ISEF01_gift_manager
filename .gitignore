@@ -1,0 +1,5 @@
+node_modules/
+geschenke.db
+public/uploads/*
+!public/uploads/.gitkeep
+.env
