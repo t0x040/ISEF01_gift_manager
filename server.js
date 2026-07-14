@@ -96,10 +96,22 @@ async function initDatabase() {
   `);
 
   // Seed default occasions if empty
-  const [{ count }] = db.exec('SELECT COUNT(*) as count FROM occasions')[0]?.values || [[0]];
+  const result = db.exec(
+    'SELECT COUNT(*) AS count FROM occasions'
+  );
+
+  const count = result[0]?.values[0]?.[0] ?? 0;
+
   if (count === 0) {
-    db.run('INSERT INTO occasions (name, is_fixed) VALUES (?, ?)', ['Geburtstag', 1]);
-    db.run('INSERT INTO occasions (name, is_fixed) VALUES (?, ?)', ['Weihnachten', 1]);
+    db.run(
+      'INSERT INTO occasions (name, is_fixed) VALUES (?, ?)',
+      ['Geburtstag', 1]
+    );
+
+    db.run(
+      'INSERT INTO occasions (name, is_fixed) VALUES (?, ?)',
+      ['Weihnachten', 1]
+    );
   }
 
   saveDatabase();
