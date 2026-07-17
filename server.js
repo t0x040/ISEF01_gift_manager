@@ -2,6 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
+const multer = require('multer');
 const initSqlJs = require('sql.js');
 
 const app = express();
@@ -15,6 +17,16 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// File Upload
+const storage = multer.diskStorage({
+  destination: path.join(__dirname, 'public/uploads'),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, Date.now() + ext);
+  }
+});
+const upload = multer({ storage });
 
 // ============================================================
 // SQLITE-DATENBANK (sql.js)
@@ -117,6 +129,10 @@ async function initDatabase() {
   saveDatabase();
 }
 
+// ============================================================
+// HELPER FUNCTIONS
+// ============================================================
+
 // Helper: run SELECT and return array of objects
 function query(sql, params = []) {
   const stmt = db.prepare(sql);
@@ -141,17 +157,85 @@ function run(sql, params = []) {
   saveDatabase();
 }
 
+// Helper: notification for persons birthday next month
+function getBirthdayNotifications() {
+  const now = new Date();
+  const nextMonth = now.getMonth() + 2;
+  if (nextMonth > 12) nextMonth = 1;
+  const monthStr = String(nextMonth).padStart(2, '0');
+
+  return query(`
+    SELECT p.*, COUNT(gi.id) AS idea_count
+    FROM persons p
+    LEFT JOIN gift_ideas gi ON gi.person_id = p.id
+    WHERE substr(p.birthday, 6, 2) = ?
+    GROUP BY p.id
+  `, [monthStr]);
+}
+
+// Helper: check Christmas status
+function getChristmasStatus() {
+  const month = new Date().getMonth() + 1;
+  if (month < 11) return null;
+
+  return query(`
+    SELECT p.*,
+      COUNT(CASE WHEN gi.occasion_id = 2 AND gi.is_purchased = 1 THEN 1 END) AS purchased_count,
+      COUNT(CASE WHEN gi.occasion_id = 2 THEN 1 END) AS total_ideas
+    FROM persons p
+    LEFT JOIN gift_ideas gi ON gi.person_id = p.id
+    GROUP BY p.id
+  `);
+}
+
+// Helper: Gift idea generator
+const SUGGESTION_POOL = {
+  'buch': ['Hoerbuch-Abo', 'Leselampe', 'Buchgutschein', 'Lesezeichen-Set', 'Buch-Abo'],
+  'technik': ['Powerbank', 'Handyhuelle', 'USB-Hub', 'Bluetooth-Box', 'Tablet-Staender'],
+  'kueche': ['Kochbuch', 'Gewuerzset', 'Schuerze', 'Tee-Sortiment', 'Kaffeemuehle'],
+  'kleidung': ['Schal', 'Muetze', 'Socken-Abo', 'Gutschein Lieblingsmarke', 'Handschuhe'],
+  'spiel': ['Puzzle', 'Kartenspiel', 'Brettspiel', 'Escape-Room-Gutschein', 'Videospiel'],
+  'gutschein': ['Kino-Gutschein', 'Restaurant-Gutschein', 'Wellness-Gutschein', 'Erlebnis-Gutschein'],
+  'musik': ['Konzertkarten', 'Vinyl-Platte', 'Kopfhoerer', 'Streaming-Abo'],
+  'sport': ['Trinkflasche', 'Fitness-Band', 'Yoga-Matte', 'Sportgutschein'],
+  'garten': ['Blumensamen', 'Gartenhandschuhe', 'Kraeutertopf', 'Giesskanne'],
+  'kosmetik': ['Parfuem', 'Badebomben-Set', 'Handcreme', 'Duftkerze'],
+};
+
+function generateSuggestions(personId) {
+  const pastGifts = query(`SELECT description FROM gifts WHERE person_id = ?`, [personId]);
+  const existingIdeas = query(`SELECT title FROM gift_ideas WHERE person_id = ?`, [personId]);
+
+  const allText = [...pastGifts.map(g => g.description), ...existingIdeas.map(i => i.title)]
+  .join(' ').toLowerCase();
+
+  const matchedCategories = Object.keys(SUGGESTION_POOL)
+  .filter(category => allText.includes(category));
+
+  let suggestions;
+  if (matchedCategories.length === 0) {
+    const allSuggestions = Object.values(SUGGESTION_POOL).flat();
+    suggestions = allSuggestions.sort(() => Math.random() - 0.5).slice(0, 6);
+  } else {
+    suggestions = matchedCategories
+      .flatMap(cat => SUGGESTION_POOL[cat])
+      .filter(s => !allText.includes(s.toLowerCase()))
+      .slice(0, 6);
+  }
+  return suggestions;
+}
+
 // ============================================================
 // ROUTES
 // ============================================================
 
+// Dashboard
 app.get('/', (req, res) => {
-  res.render('dashboard', {
-    birthdays: [],
-    christmasStatus: null,
-    totalPersons: 0,
-    totalIdeas: 0
-  });
+  const birthdays = getBirthdayNotifications();
+  const christmasStatus = getChristmasStatus();
+  const totalPersons = queryOne('SELECT COUNT(*) AS count FROM persons').count;
+  const totalIdeas = queryOne('SELECT COUNT(*) AS count FROM gift_ideas WHERE is_purchased = 0').count;
+  res.render('dashboard', { birthdays, christmasStatus, totalPersons, totalIdeas });
 });
 
 // ============================================================
