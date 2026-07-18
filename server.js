@@ -238,6 +238,105 @@ app.get('/', (req, res) => {
   res.render('dashboard', { birthdays, christmasStatus, totalPersons, totalIdeas });
 });
 
+// Persons
+app.get('/persons', (req, res) => {
+  const persons = query(`
+    SELECT p.*,
+     COUNT(DISTINCT gi.id) AS idea_count,
+     COUNT(DISTINCT g.id) AS gift_count
+    FROM persons p
+    LEFT JOIN gift_ideas gi ON gi.person_id = p.id
+    LEFT JOIN gifts g ON g.person_id = p.id
+    GROUP BY p.id
+    ORDER BY p.name COLLATE NOCASE 
+  `);
+  res.render('persons', { persons });
+});
+
+app.post('/persons', (req, res) => {
+  const { name, birthday, notes } = req.body;
+  if (!name || name.trim() === '') return res.redirect('/persons');
+  run('INSERT INTO persons (name, birthday, notes) VALUES (?, ?, ?)', [
+    name.trim(), 
+    birthday || null, 
+    notes || null
+  ]);
+  res.redirect('/persons');
+});
+
+app.get('/persons/:id', (req, res) => {
+  const personId = parseInt(req.params.id);
+  const person = queryOne('SELECT * FROM persons WHERE id = ?', [personId]);
+  if (!person) return res.redirect('/persons');
+
+  const ideas = query(`
+    SELECT gi.*, o.name AS occasion_name
+    FROM gift_ideas gi
+    LEFT JOIN occasions o ON o.id = gi.occasion_id
+    WHERE gi.person_id = ?
+    ORDER BY gi.purchased ASC
+  `, [personId]);
+
+  const gifts = query(`
+    SELECT g.*, o.name AS occasion_name
+    FROM gifts g
+    LEFT JOIN occasions o ON o.id = g.occasion_id
+    WHERE g.person_id = ?
+    ORDER BY g.gift_date DESC
+  `, [personId]);
+
+  const occasions = query('SELECT * FROM occasions');
+  const suggestions = req.query.suggest === '1' ? generateSuggestions(personId) : null;
+  const shareLink = queryOne('SELECT * FROM share_links WHERE person_id = ?', [personId]);
+
+  res.render('person', { person, ideas, gifts, occasions, suggestions, shareLink });
+});
+
+app.post('/persons/:id/update', (req, res) => {
+  const { name, birthday, notes } = req.body;
+  if (!name || name.trim() === '') return res.redirect(`/persons/${req.params.id}`);
+  const personId = parseInt(req.params.id);
+  run('UPDATE persons SET name = ?, birthday = ?, notes = ? WHERE id = ?', [
+    name.trim(),
+    birthday || null,
+    notes || null,
+    personId
+  ]);
+  res.redirect(`/persons/${req.params.id}`);
+});
+
+app.post('/persons/:id/delete', (req, res) => {
+  const personId = parseInt(req.params.id);
+  run('DELETE FROM persons WHERE id = ?', [personId]);
+  res.redirect('/persons');
+});
+
+// Occasions
+app.get('/occasions', (req, res) => {
+  const occasions = query('SELECT * FROM occasions');
+  res.render('occasions', { occasions });
+});
+
+app.post('/occasions', (req, res) => {
+  const { name } = req.body;
+  if (!name || name.trim() === '') return res.redirect('/occasions');
+  run('INSERT INTO occasions (name, is_fixed) VALUES (?)', [name.trim()]);
+  res.redirect('/occasions');
+});
+
+app.post('/occasions/:id/delete', (req, res) => {
+  const occasion = queryOne('SELECT * FROM occasions WHERE id = ?', [parseInt(req.params.id)]);
+  if (occasion && !occasion.is_fixed) {
+    run('DELETE FROM occasions WHERE id = ?', [parseInt(req.params.id)]);
+  }
+  res.redirect('/occasions');
+});
+
+// Suggestions
+app.get('/persons/:id/suggestions', (req, res) => {
+  res.redirect(`/persons/${req.params.id}?suggest=1`);
+});
+
 // ============================================================
 // START SERVER
 // ============================================================
