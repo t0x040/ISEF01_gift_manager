@@ -230,6 +230,7 @@ function generateSuggestions(personId) {
 // ============================================================
 
 // Dashboard
+// ============================================================
 app.get('/', (req, res) => {
   const birthdays = getBirthdayNotifications();
   const christmasStatus = getChristmasStatus();
@@ -239,6 +240,7 @@ app.get('/', (req, res) => {
 });
 
 // Persons
+// ============================================================
 app.get('/persons', (req, res) => {
   const persons = query(`
     SELECT p.*,
@@ -274,7 +276,7 @@ app.get('/persons/:id', (req, res) => {
     FROM gift_ideas gi
     LEFT JOIN occasions o ON o.id = gi.occasion_id
     WHERE gi.person_id = ?
-    ORDER BY gi.purchased ASC
+    ORDER BY gi.is_purchased ASC
   `, [personId]);
 
   const gifts = query(`
@@ -311,7 +313,97 @@ app.post('/persons/:id/delete', (req, res) => {
   res.redirect('/persons');
 });
 
+// Gift Ideas
+// ============================================================
+app.post('/ideas', upload.single('image'), (req, res) => {
+  const { person_id, occasion_id, title, description, link, open_tasks } = req.body;
+  if (!person_id || !title || title.trim() === '') return res.redirect('/persons');
+
+  const imagePath = req.file ? '/uploads/' + req.file.filename : null;
+
+  run(`
+    INSERT INTO gift_ideas (person_id, occasion_id, title, description, link, image_path, open_tasks)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `, [
+    parseInt(person_id),
+    occasion_id ? parseInt(occasion_id) : null,
+    title.trim(),
+    description || null,
+    link || null,
+    imagePath,
+    open_tasks || null
+  ]);
+  res.redirect(`/persons/${person_id}`);
+});
+
+app.get('/ideas/:id/edit', (req, res) => {
+  const idea = queryOne('SELECT * FROM gift_ideas WHERE id = ?', [parseInt(req.params.id)]);
+  if (!idea) return res.redirect('/persons');
+  const occasions = query('SELECT * FROM occasions');
+  res.render('idea-form', { idea, occasions });
+});
+
+app.post('/ideas/:id/update', upload.single('image'), (req, res) => {
+  const idea = queryOne('SELECT * FROM gift_ideas WHERE id = ?', [parseInt(req.params.id)]);
+  if (!idea) return res.redirect('/persons');
+
+  const { occasion_id, title, description, link, open_tasks } = req.body;
+  const imagePath = req.file ? '/uploads/' + req.file.filename : idea.image_path;
+
+  run(`
+    UPDATE gift_ideas SET occasion_id = ?, title = ?, description = ?, link = ?, image_path = ?, open_tasks = ?
+    WHERE id = ?
+  `, [
+    occasion_id ? parseInt(occasion_id) : null,
+    title.trim(),
+    description || null,
+    link || null,
+    imagePath,
+    open_tasks || null,
+    idea.id
+  ]);
+  res.redirect(`/persons/${idea.person_id}`);
+});
+
+app.post('/ideas/:id/delete', (req, res) => {
+  const idea = queryOne('SELECT * FROM gift_ideas WHERE id = ?', [parseInt(req.params.id)]);
+  const personId = idea ? idea.person_id : null;
+  run('DELETE FROM gift_ideas WHERE id = ?', [parseInt(req.params.id)]);
+  res.redirect(personId ? `/persons/${personId}` : '/persons');
+});
+
+app.post('/ideas/:id/purchased', (req, res) => {
+  const idea = queryOne('SELECT * FROM gift_ideas WHERE id = ?', [parseInt(req.params.id)]);
+  if (!idea) return res.redirect('/persons');
+  run('UPDATE gift_ideas SET is_purchased = ? WHERE id = ?', [
+    idea.is_purchased ? 0 : 1,
+    idea.id
+  ]);
+  res.redirect(`/persons/${idea.person_id}`);
+});
+
+app.post('/ideas/:id/convert', (req, res) => {
+  const idea = queryOne('SELECT * FROM gift_ideas WHERE id = ?', [parseInt(req.params.id)]);
+  if (!idea) return res.redirect('/persons');
+
+  const giftDate = req.body.gift_date || new Date().toISOString().split('T')[0];
+  const occasionId = req.body.occasion_id ? parseInt(req.body.occasion_id) : idea.occasion_id;
+
+  db.run('INSERT INTO gifts (person_id, occasion_id, description, gift_date, notes) VALUES (?, ?, ?, ?, ?)', [
+    idea.person_id,
+    occasionId,
+    idea.title,
+    giftDate,
+    idea.description 
+  ]);
+  db.run('DELETE FROM gift_ideas WHERE id = ?', [idea.id]);
+  saveDatabase();
+
+  res.redirect(`/persons/${idea.person_id}`);
+});
+
 // Occasions
+// ============================================================
 app.get('/occasions', (req, res) => {
   const occasions = query('SELECT * FROM occasions');
   res.render('occasions', { occasions });
@@ -320,7 +412,7 @@ app.get('/occasions', (req, res) => {
 app.post('/occasions', (req, res) => {
   const { name } = req.body;
   if (!name || name.trim() === '') return res.redirect('/occasions');
-  run('INSERT INTO occasions (name, is_fixed) VALUES (?)', [name.trim()]);
+  run('INSERT INTO occasions (name, is_fixed) VALUES (?, 0)', [name.trim()]);
   res.redirect('/occasions');
 });
 
@@ -332,7 +424,59 @@ app.post('/occasions/:id/delete', (req, res) => {
   res.redirect('/occasions');
 });
 
+// Share
+// ============================================================
+app.post('/persons/:id/share', (req, res) => {
+  const personId = parseInt(req.params.id);
+  const existing = queryOne('SELECT * FROM share_links WHERE person_id = ?', [personId]);
+  if (!existing) {
+    const token = crypto.randomUUID();
+    run('INSERT INTO share_links (token, person_id) VALUES (?, ?)', [token, personId]);
+  }
+  res.redirect(`/persons/${req.params.id}`);
+});
+
+app.get('/share/:token', (req, res) => {
+  const link = queryOne('SELECT * FROM share_links WHERE token = ?', [req.params.token]);
+  if (!link) return res.status(404).send('Link nicht gefunden');
+
+  const person = queryOne('SELECT * FROM persons WHERE id = ?', [link.person_id]);
+  if (!person) return res.status(404).send('Person nicht gefunden');
+
+  const ideas = query(`
+    SELECT gi.*, o.name AS occasion_name
+    FROM gift_ideas gi
+    LEFT JOIN occasions o ON o.id = gi.occasion_id
+    WHERE gi.person_id = ?
+  `, [link.person_id]);
+
+  res.render('share', { person, ideas });
+});
+
+// Print
+// ============================================================
+app.get('/print', (req, res) => {
+  const persons = query(`SELECT * FROM persons`);
+  const printData = persons.map(person => {
+    const ideas = query(`
+      SELECT gi.*, o.name AS occasion_name
+      FROM gift_ideas gi
+      LEFT JOIN occasions o ON o.id = gi.occasion_id
+      WHERE gi.person_id = ?
+    `, [person.id]);
+    const gifts = query(`
+      SELECT g.*, o.name AS occasion_name
+      FROM gifts g
+      LEFT JOIN occasions o ON o.id = g.occasion_id
+      WHERE g.person_id = ?
+    `, [person.id]);
+    return { ...person, ideas, gifts };
+  });
+  res.render('print', { data: printData });
+});
+
 // Suggestions
+// ============================================================
 app.get('/persons/:id/suggestions', (req, res) => {
   res.redirect(`/persons/${req.params.id}?suggest=1`);
 });
